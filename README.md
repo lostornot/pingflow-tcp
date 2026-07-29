@@ -1,0 +1,178 @@
+# PingFlow TCP
+
+PingFlow TCP measures request-response latency inside a persistent TCP
+connection and compares it with TCP connection latency.
+
+它不是 ICMP Ping，也不是带宽测速工具。PingFlow 会先建立一条 TCP 连接，
+然后在同一连接中持续发送小型请求，由服务端立即回显，用来发现“TCP
+握手延迟正常，但真实数据交互明显更慢”以及少量长尾卡顿等问题。
+
+## 功能
+
+- 分别报告 TCP 建连 RTT 与已建立连接内的 request-response RTT
+- 同时支持 IPv4 与 IPv6
+- 一个服务端进程可同时监听 `0.0.0.0` 和 `[::]`
+- 支持 32 B、1300 B 或自定义负载大小
+- 报告 min、median、p95、p99、max、长尾率和失败率
+- 默认启用 `TCP_NODELAY`
+- 支持 JSON 输出
+- 单文件实现，仅依赖 Python 3 标准库
+
+## 一键安装
+
+Linux 和 macOS：
+
+```bash
+curl -fsSL https://github.com/lostornot/pingflow-tcp/releases/latest/download/install.sh | sudo sh
+```
+
+安装脚本会校验 Release 中 `pingflow` 文件的 SHA-256。若希望先检查安装
+脚本，可以先下载再执行：
+
+```bash
+curl -fsSL https://github.com/lostornot/pingflow-tcp/releases/latest/download/install.sh -o install-pingflow.sh
+less install-pingflow.sh
+sudo sh install-pingflow.sh
+```
+
+要求：Python 3.8 或更高版本，以及 `curl` 或 `wget`。
+
+## 使用
+
+### VPS 服务端
+
+默认同时监听 IPv4 和 IPv6 的 TCP 39001 端口：
+
+```bash
+pingflow -s
+```
+
+只监听 IPv4 或 IPv6：
+
+```bash
+pingflow -s -4
+pingflow -s -6
+```
+
+如果服务器启用了防火墙，需要临时允许测试端口，例如：
+
+```bash
+sudo ufw allow 39001/tcp
+```
+
+服务端默认在前台运行，按 `Ctrl+C` 停止。
+
+### 客户端
+
+直接传入 IPv4 或 IPv6 地址时，PingFlow 会自动识别地址族，不需要
+`-4` 或 `-6`：
+
+```bash
+pingflow -c 203.0.113.10
+pingflow -c 2001:db8::10
+```
+
+IPv6 命令行地址不需要方括号。
+
+一次测试 32 B 和 1300 B：
+
+```bash
+pingflow -c 203.0.113.10 --sizes 32,1300
+```
+
+传入域名时，默认使用系统解析器返回的首选地址。只有需要强制地址族或
+同时比较两种地址族时才使用 `-4`、`-6` 或 `--both`：
+
+```bash
+pingflow -c example.com -4
+pingflow -c example.com -6
+pingflow -c example.com --both --sizes 32,1300
+```
+
+复现较长测试：
+
+```bash
+pingflow -c 203.0.113.10 \
+  --connect-count 20 \
+  --count 300 \
+  --interval 0.2 \
+  --timeout 1.5 \
+  --sizes 32,1300
+```
+
+JSON 输出：
+
+```bash
+pingflow -c 203.0.113.10 -n 100 -J
+```
+
+查看全部参数：
+
+```bash
+pingflow --help
+```
+
+## 如何解读
+
+正常情况：
+
+```text
+TCP connect RTT median:                 50 ms
+established request/response RTT median: 51 ms
+```
+
+握手与连接内交互延迟基本一致。
+
+疑似握手包与普通数据包处理不同：
+
+```text
+TCP connect RTT median:                 50 ms
+established request/response RTT median: 170 ms
+```
+
+如果中位数正常，但 p99 或 max 偶尔跳到数百毫秒，则代表存在真实长尾。
+这可能来自丢包重传、链路排队、Wi-Fi、本机调度或代理处理。
+
+PingFlow 不能仅凭应用层结果直接给出原始丢包率，因为 TCP 会自动重传。
+要确认长尾是否由丢包造成，仍需结合客户端与服务端抓包。后续版本计划在
+支持的平台读取 `TCP_INFO`，补充 TCP 重传计数。
+
+## 协议说明
+
+客户端建立 TCP 连接后：
+
+1. 协商协议版本与固定 payload 长度；
+2. 完成若干次不计入结果的预热交互；
+3. 每次只发送一个请求；
+4. 等待服务端完整回显后再发送下一次请求；
+5. 使用单调高精度时钟测量每次完整 request-response RTT。
+
+服务端只接受 PingFlow 协议，payload 上限为 1 MiB，且响应大小与请求
+大小相同，不提供 UDP 服务。
+
+## 安全提示
+
+PingFlow 服务端没有身份认证或加密。建议仅在测试期间开放端口，完成后
+停止服务并删除临时防火墙规则：
+
+```bash
+sudo ufw delete allow 39001/tcp
+```
+
+## 与 iPerf3 的区别
+
+iPerf3 主要测量最大可达带宽、吞吐和相关网络性能；PingFlow 专注于
+一条已建立 TCP 连接中的小型 request-response 延迟。两者互补，
+PingFlow 与 ESnet iPerf 项目无关。
+
+## 开发
+
+运行测试：
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+## License
+
+[MIT](LICENSE)

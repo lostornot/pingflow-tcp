@@ -1,0 +1,736 @@
+#!/usr/bin/env python3
+"""PingFlow: request/response RTT measurement inside a persistent TCP flow."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import socket
+import socketserver
+import struct
+import sys
+import threading
+import time
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+
+VERSION = "0.1.0"
+DEFAULT_PORT = 39001
+DEFAULT_PAYLOAD = 32
+DEFAULT_COUNT = 300
+DEFAULT_INTERVAL = 0.2
+DEFAULT_TIMEOUT = 1.5
+DEFAULT_CONNECT_COUNT = 20
+DEFAULT_WARMUP = 3
+MAX_PAYLOAD = 1024 * 1024
+PROTOCOL_HELLO = b"PINGFLOW\x01"
+PROTOCOL_ACK = b"OK\x01"
+HELLO_SIZE = len(PROTOCOL_HELLO) + 4
+
+
+class PingFlowError(Exception):
+    """A user-facing PingFlow error."""
+
+
+def recv_exact(sock: socket.socket, size: int) -> bytes:
+    chunks: List[bytes] = []
+    remaining = size
+    while remaining:
+        chunk = sock.recv(remaining)
+        if not chunk:
+            raise ConnectionError("peer closed the connection")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def set_tcp_nodelay(sock: socket.socket, enabled: bool) -> None:
+    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1 if enabled else 0)
+
+
+class PingFlowHandler(socketserver.BaseRequestHandler):
+    def handle(self) -> None:
+        conn = self.request
+        assert isinstance(conn, socket.socket)
+        set_tcp_nodelay(conn, bool(self.server.tcp_nodelay))  # type: ignore[attr-defined]
+        conn.settimeout(10.0)
+        try:
+            hello = recv_exact(conn, HELLO_SIZE)
+            if not hello.startswith(PROTOCOL_HELLO):
+                return
+            payload_size = struct.unpack("!I", hello[len(PROTOCOL_HELLO) :])[0]
+            if payload_size < 1 or payload_size > MAX_PAYLOAD:
+                return
+            conn.sendall(PROTOCOL_ACK)
+            conn.settimeout(60.0)
+            while True:
+                payload = recv_exact(conn, payload_size)
+                conn.sendall(payload)
+        except (ConnectionError, OSError, socket.timeout):
+            return
+
+
+class ThreadingPingFlowServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+    block_on_close = False
+    tcp_nodelay = True
+
+
+class IPv4PingFlowServer(ThreadingPingFlowServer):
+    address_family = socket.AF_INET
+
+
+class IPv6PingFlowServer(ThreadingPingFlowServer):
+    address_family = socket.AF_INET6
+
+    def server_bind(self) -> None:
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        super().server_bind()
+
+
+def format_endpoint(sockaddr: Tuple[Any, ...], family: int, port: int) -> str:
+    host = str(sockaddr[0])
+    if family == socket.AF_INET6:
+        return "[{}]:{}".format(host, port)
+    return "{}:{}".format(host, port)
+
+
+def family_name(family: int) -> str:
+    return "IPv6" if family == socket.AF_INET6 else "IPv4"
+
+
+def percentile(values: Sequence[float], fraction: float) -> float:
+    if not values:
+        raise ValueError("cannot calculate a percentile of an empty sequence")
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * fraction
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
+def summarize(values: Sequence[float]) -> Dict[str, float]:
+    return {
+        "min": min(values),
+        "median": percentile(values, 0.50),
+        "p95": percentile(values, 0.95),
+        "p99": percentile(values, 0.99),
+        "max": max(values),
+    }
+
+
+def parse_sizes(value: str) -> List[int]:
+    try:
+        sizes = [int(part.strip()) for part in value.split(",") if part.strip()]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("sizes must be comma-separated integers") from exc
+    if not sizes:
+        raise argparse.ArgumentTypeError("at least one payload size is required")
+    for size in sizes:
+        if size < 1 or size > MAX_PAYLOAD:
+            raise argparse.ArgumentTypeError(
+                "payload size must be between 1 and {} bytes".format(MAX_PAYLOAD)
+            )
+    return sizes
+
+
+def make_payload(sequence: int, size: int) -> bytes:
+    seed = struct.pack("!Q", sequence)
+    repeats = (size + len(seed) - 1) // len(seed)
+    return (seed * repeats)[:size]
+
+
+def resolve_targets(
+    host: str, port: int, family_mode: str
+) -> List[Tuple[int, Tuple[Any, ...]]]:
+    requested_family = {
+        "ipv4": socket.AF_INET,
+        "ipv6": socket.AF_INET6,
+        "auto": socket.AF_UNSPEC,
+        "both": socket.AF_UNSPEC,
+    }[family_mode]
+    try:
+        infos = socket.getaddrinfo(
+            host, port, requested_family, socket.SOCK_STREAM, socket.IPPROTO_TCP
+        )
+    except socket.gaierror as exc:
+        raise PingFlowError("cannot resolve {}: {}".format(host, exc)) from exc
+
+    targets: List[Tuple[int, Tuple[Any, ...]]] = []
+    seen = set()
+    for family, socktype, proto, _canonname, sockaddr in infos:
+        if family not in (socket.AF_INET, socket.AF_INET6):
+            continue
+        key = (family, sockaddr)
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append((family, sockaddr))
+
+    if not targets:
+        raise PingFlowError("no usable IPv4 or IPv6 address found for {}".format(host))
+
+    if family_mode != "both":
+        return [targets[0]]
+
+    selected: List[Tuple[int, Tuple[Any, ...]]] = []
+    for wanted in (socket.AF_INET, socket.AF_INET6):
+        match = next((item for item in targets if item[0] == wanted), None)
+        if match is not None:
+            selected.append(match)
+    return selected
+
+
+def connect_socket(
+    family: int,
+    sockaddr: Tuple[Any, ...],
+    timeout: float,
+    tcp_nodelay: bool,
+) -> Tuple[socket.socket, float]:
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    started = time.perf_counter_ns()
+    try:
+        sock.connect(sockaddr)
+    except BaseException:
+        sock.close()
+        raise
+    elapsed_ms = (time.perf_counter_ns() - started) / 1_000_000.0
+    set_tcp_nodelay(sock, tcp_nodelay)
+    return sock, elapsed_ms
+
+
+def negotiate_flow(sock: socket.socket, payload_size: int) -> None:
+    sock.sendall(PROTOCOL_HELLO + struct.pack("!I", payload_size))
+    ack = recv_exact(sock, len(PROTOCOL_ACK))
+    if ack != PROTOCOL_ACK:
+        raise PingFlowError("server did not return a valid PingFlow handshake")
+
+
+def exchange(sock: socket.socket, payload: bytes) -> float:
+    started = time.perf_counter_ns()
+    sock.sendall(payload)
+    echoed = recv_exact(sock, len(payload))
+    elapsed_ms = (time.perf_counter_ns() - started) / 1_000_000.0
+    if echoed != payload:
+        raise PingFlowError("server returned data that does not match the request")
+    return elapsed_ms
+
+
+def measure_connect_rtt(
+    family: int,
+    sockaddr: Tuple[Any, ...],
+    count: int,
+    timeout: float,
+    tcp_nodelay: bool,
+) -> Tuple[List[float], int]:
+    samples: List[float] = []
+    errors = 0
+    for _ in range(count):
+        try:
+            sock, elapsed_ms = connect_socket(
+                family, sockaddr, timeout, tcp_nodelay
+            )
+            samples.append(elapsed_ms)
+            sock.close()
+        except OSError:
+            errors += 1
+    return samples, errors
+
+
+def open_persistent_flow(
+    family: int,
+    sockaddr: Tuple[Any, ...],
+    timeout: float,
+    tcp_nodelay: bool,
+    payload_size: int,
+) -> socket.socket:
+    sock, _elapsed_ms = connect_socket(family, sockaddr, timeout, tcp_nodelay)
+    try:
+        negotiate_flow(sock, payload_size)
+    except BaseException:
+        sock.close()
+        raise
+    return sock
+
+
+def run_warmup(
+    sock: socket.socket, payload_size: int, warmup_count: int
+) -> None:
+    for sequence in range(warmup_count):
+        exchange(sock, make_payload(sequence, payload_size))
+
+
+def measure_flow_rtt(
+    family: int,
+    sockaddr: Tuple[Any, ...],
+    payload_size: int,
+    count: int,
+    interval: float,
+    timeout: float,
+    warmup: int,
+    tcp_nodelay: bool,
+    verbose: bool,
+) -> Dict[str, Any]:
+    samples: List[float] = []
+    timeouts = 0
+    errors = 0
+    connections = 0
+    sock: Optional[socket.socket] = None
+
+    for sequence in range(count):
+        payload = make_payload(sequence + warmup, payload_size)
+        try:
+            if sock is None:
+                sock = open_persistent_flow(
+                    family, sockaddr, timeout, tcp_nodelay, payload_size
+                )
+                connections += 1
+                if warmup:
+                    run_warmup(sock, payload_size, warmup)
+            elapsed_ms = exchange(sock, payload)
+            samples.append(elapsed_ms)
+            if verbose:
+                print("{:04d}  {:9.2f} ms".format(sequence + 1, elapsed_ms))
+        except socket.timeout:
+            timeouts += 1
+            if verbose:
+                print("{:04d}  timeout".format(sequence + 1))
+            if sock is not None:
+                sock.close()
+                sock = None
+        except (ConnectionError, PingFlowError, OSError) as exc:
+            errors += 1
+            if verbose:
+                print("{:04d}  error: {}".format(sequence + 1, exc))
+            if sock is not None:
+                sock.close()
+                sock = None
+        if interval > 0 and sequence + 1 < count:
+            time.sleep(interval)
+
+    if sock is not None:
+        sock.close()
+
+    return {
+        "samples_ms": samples,
+        "timeouts": timeouts,
+        "errors": errors,
+        "persistent_connections": connections,
+    }
+
+
+def make_result(
+    host: str,
+    port: int,
+    family: int,
+    sockaddr: Tuple[Any, ...],
+    payload_size: int,
+    args: argparse.Namespace,
+) -> Dict[str, Any]:
+    connect_samples, connect_errors = measure_connect_rtt(
+        family,
+        sockaddr,
+        args.connect_count,
+        args.timeout,
+        args.tcp_nodelay,
+    )
+    if not connect_samples:
+        raise PingFlowError(
+            "all {} TCP connection attempts to {} failed".format(
+                args.connect_count, format_endpoint(sockaddr, family, port)
+            )
+        )
+
+    flow = measure_flow_rtt(
+        family,
+        sockaddr,
+        payload_size,
+        args.count,
+        args.interval,
+        args.timeout,
+        args.warmup,
+        args.tcp_nodelay,
+        args.verbose and not args.json,
+    )
+    flow_samples = flow.pop("samples_ms")
+    if not flow_samples:
+        raise PingFlowError(
+            "no request/response sample completed for {}".format(
+                format_endpoint(sockaddr, family, port)
+            )
+        )
+
+    connect_stats = summarize(connect_samples)
+    flow_stats = summarize(flow_samples)
+    automatic_slow_threshold = max(100.0, flow_stats["median"] * 2.0)
+    slow_threshold = (
+        args.slow_ms if args.slow_ms is not None else automatic_slow_threshold
+    )
+    slow_count = sum(1 for value in flow_samples if value > slow_threshold)
+    failure_count = flow["timeouts"] + flow["errors"]
+    median_gap = flow_stats["median"] - connect_stats["median"]
+    median_ratio = flow_stats["median"] / connect_stats["median"]
+
+    return {
+        "requested_host": host,
+        "resolved_address": str(sockaddr[0]),
+        "target": format_endpoint(sockaddr, family, port),
+        "family": family_name(family),
+        "port": port,
+        "payload_bytes": payload_size,
+        "attempted_samples": args.count,
+        "completed_samples": len(flow_samples),
+        "connect": {
+            "attempted": args.connect_count,
+            "completed": len(connect_samples),
+            "errors": connect_errors,
+            "rtt_ms": connect_stats,
+        },
+        "flow": {
+            "rtt_ms": flow_stats,
+            "timeouts": flow["timeouts"],
+            "errors": flow["errors"],
+            "persistent_connections": flow["persistent_connections"],
+            "median_gap_ms": median_gap,
+            "median_ratio": median_ratio,
+            "slow_threshold_ms": slow_threshold,
+            "slow_samples": slow_count,
+            "slow_rate_percent": slow_count / len(flow_samples) * 100.0,
+            "failure_rate_percent": failure_count / args.count * 100.0,
+        },
+        "settings": {
+            "interval_seconds": args.interval,
+            "timeout_seconds": args.timeout,
+            "warmup_samples": args.warmup,
+            "tcp_nodelay": args.tcp_nodelay,
+        },
+    }
+
+
+def format_stats(stats: Dict[str, float], fields: Iterable[str]) -> str:
+    return ", ".join("{} {:.2f}".format(name, stats[name]) for name in fields)
+
+
+def print_result(result: Dict[str, Any]) -> None:
+    connect = result["connect"]
+    flow = result["flow"]
+    print()
+    print("=== summary ===")
+    print(
+        "target: {} ({}), payload: {} B, samples: {}".format(
+            result["target"],
+            result["family"],
+            result["payload_bytes"],
+            result["attempted_samples"],
+        )
+    )
+    print(
+        "TCP connect RTT ms: {}".format(
+            format_stats(connect["rtt_ms"], ("median", "p95"))
+        )
+    )
+    print(
+        "TCP connect samples: {}/{}, errors: {}".format(
+            connect["completed"], connect["attempted"], connect["errors"]
+        )
+    )
+    print(
+        "established request/response RTT ms: {}".format(
+            format_stats(
+                flow["rtt_ms"], ("min", "median", "p95", "p99", "max")
+            )
+        )
+    )
+    print(
+        "median latency gap: {:+.2f} ms ({:.2f}x)".format(
+            flow["median_gap_ms"], flow["median_ratio"]
+        )
+    )
+    print(
+        "completed: {}, timeouts: {}, errors: {}, persistent TCP connections: {}".format(
+            result["completed_samples"],
+            flow["timeouts"],
+            flow["errors"],
+            flow["persistent_connections"],
+        )
+    )
+    print(
+        "slow sample rate (> {:.2f} ms): {:.2f}% ({}/{})".format(
+            flow["slow_threshold_ms"],
+            flow["slow_rate_percent"],
+            flow["slow_samples"],
+            result["completed_samples"],
+        )
+    )
+    print(
+        "application failure rate: {:.2f}%".format(flow["failure_rate_percent"])
+    )
+
+
+def run_server(args: argparse.Namespace) -> int:
+    servers: List[ThreadingPingFlowServer] = []
+    requested: List[Tuple[type, str, str]] = []
+    if args.family_mode in ("auto", "both", "ipv4"):
+        requested.append((IPv4PingFlowServer, args.bind4, "IPv4"))
+    if args.family_mode in ("auto", "both", "ipv6"):
+        requested.append((IPv6PingFlowServer, args.bind6, "IPv6"))
+
+    for server_class, bind_host, label in requested:
+        try:
+            server = server_class((bind_host, args.port), PingFlowHandler)
+            server.tcp_nodelay = args.tcp_nodelay
+            servers.append(server)
+        except OSError as exc:
+            print(
+                "warning: could not listen on {} {}:{}: {}".format(
+                    label, bind_host, args.port, exc
+                ),
+                file=sys.stderr,
+            )
+
+    if not servers:
+        raise PingFlowError("could not start any IPv4 or IPv6 listener")
+
+    threads: List[threading.Thread] = []
+    print("PingFlow {} server".format(VERSION))
+    for server in servers:
+        address = server.server_address
+        family = server.address_family
+        print(
+            "Listening on {} ({})".format(
+                format_endpoint(address, family, args.port), family_name(family)
+            )
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        threads.append(thread)
+    print("TCP_NODELAY: {}".format("on" if args.tcp_nodelay else "off"))
+    print("Press Ctrl+C to stop.")
+
+    try:
+        while all(thread.is_alive() for thread in threads):
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print("\nStopping PingFlow server...")
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+        for thread in threads:
+            thread.join(timeout=2.0)
+    return 0
+
+
+def run_client(args: argparse.Namespace) -> int:
+    targets = resolve_targets(args.client, args.port, args.family_mode)
+    results: List[Dict[str, Any]] = []
+    failures: List[str] = []
+
+    if not args.json:
+        print("PingFlow {} client".format(VERSION))
+
+    for family, sockaddr in targets:
+        for payload_size in args.sizes:
+            if not args.json:
+                print(
+                    "Testing {} ({}) with {} B payload...".format(
+                        format_endpoint(sockaddr, family, args.port),
+                        family_name(family),
+                        payload_size,
+                    )
+                )
+            try:
+                result = make_result(
+                    args.client,
+                    args.port,
+                    family,
+                    sockaddr,
+                    payload_size,
+                    args,
+                )
+                results.append(result)
+                if not args.json:
+                    print_result(result)
+            except PingFlowError as exc:
+                failures.append(str(exc))
+                if not args.json:
+                    print("error: {}".format(exc), file=sys.stderr)
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "tool": "pingflow",
+                    "version": VERSION,
+                    "results": results,
+                    "failures": failures,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+
+    return 0 if results and not failures else 1
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="pingflow",
+        description=(
+            "Measure request/response RTT inside a persistent TCP connection "
+            "and compare it with TCP connection latency."
+        ),
+    )
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("-s", "--server", action="store_true", help="run as server")
+    mode.add_argument("-c", "--client", metavar="HOST", help="run as client")
+
+    family = parser.add_mutually_exclusive_group()
+    family.add_argument(
+        "-4",
+        dest="family_mode",
+        action="store_const",
+        const="ipv4",
+        help="force IPv4",
+    )
+    family.add_argument(
+        "-6",
+        dest="family_mode",
+        action="store_const",
+        const="ipv6",
+        help="force IPv6",
+    )
+    family.add_argument(
+        "--both",
+        dest="family_mode",
+        action="store_const",
+        const="both",
+        help="test/listen on both IPv4 and IPv6",
+    )
+    parser.set_defaults(family_mode="auto")
+
+    parser.add_argument(
+        "-p", "--port", type=int, default=DEFAULT_PORT, help="server port"
+    )
+    parser.add_argument(
+        "-n", "--count", type=int, default=DEFAULT_COUNT, help="flow RTT samples"
+    )
+    parser.add_argument(
+        "-i",
+        "--interval",
+        type=float,
+        default=DEFAULT_INTERVAL,
+        help="seconds between flow samples",
+    )
+    size_group = parser.add_mutually_exclusive_group()
+    size_group.add_argument(
+        "-l",
+        "--length",
+        type=int,
+        metavar="BYTES",
+        help="payload size in bytes (default: {})".format(DEFAULT_PAYLOAD),
+    )
+    size_group.add_argument(
+        "--sizes",
+        type=parse_sizes,
+        metavar="LIST",
+        help="comma-separated payload sizes, for example 32,1300",
+    )
+    parser.add_argument(
+        "--connect-count",
+        type=int,
+        default=DEFAULT_CONNECT_COUNT,
+        help="TCP connection RTT samples",
+    )
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=DEFAULT_WARMUP,
+        help="unmeasured warm-up exchanges per persistent connection",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT,
+        help="socket timeout in seconds",
+    )
+    parser.add_argument(
+        "--slow-ms",
+        type=float,
+        help="slow-sample threshold in ms (default: max(100 ms, 2x median))",
+    )
+    parser.add_argument(
+        "--bind4", default="0.0.0.0", help="server IPv4 bind address"
+    )
+    parser.add_argument("--bind6", default="::", help="server IPv6 bind address")
+    parser.add_argument(
+        "--no-nodelay",
+        dest="tcp_nodelay",
+        action="store_false",
+        help="disable TCP_NODELAY",
+    )
+    parser.set_defaults(tcp_nodelay=True)
+    parser.add_argument(
+        "-J", "--json", action="store_true", help="emit machine-readable JSON"
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="print every flow RTT sample"
+    )
+    parser.add_argument(
+        "--version", action="version", version="PingFlow {}".format(VERSION)
+    )
+    return parser
+
+
+def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if not 1 <= args.port <= 65535:
+        parser.error("port must be between 1 and 65535")
+    if args.count < 1:
+        parser.error("count must be at least 1")
+    if args.connect_count < 1:
+        parser.error("connect-count must be at least 1")
+    if args.warmup < 0:
+        parser.error("warmup cannot be negative")
+    if args.interval < 0:
+        parser.error("interval cannot be negative")
+    if args.timeout <= 0:
+        parser.error("timeout must be greater than zero")
+    if args.slow_ms is not None and args.slow_ms <= 0:
+        parser.error("slow-ms must be greater than zero")
+
+    if args.length is not None:
+        if not 1 <= args.length <= MAX_PAYLOAD:
+            parser.error(
+                "length must be between 1 and {} bytes".format(MAX_PAYLOAD)
+            )
+        args.sizes = [args.length]
+    elif args.sizes is None:
+        args.sizes = [DEFAULT_PAYLOAD]
+
+    if args.server and args.json:
+        parser.error("--json is only available in client mode")
+    if args.server and args.verbose:
+        parser.error("--verbose is only available in client mode")
+    if args.server and args.family_mode == "auto":
+        args.family_mode = "both"
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    validate_args(parser, args)
+    try:
+        return run_server(args) if args.server else run_client(args)
+    except PingFlowError as exc:
+        print("pingflow: error: {}".format(exc), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
