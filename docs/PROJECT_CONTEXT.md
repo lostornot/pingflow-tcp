@@ -44,6 +44,9 @@ loss.
   behavior and allowing both listeners to coexist.
 - The server remains in the foreground and is designed for temporary
   diagnostic use.
+- The foreground server handles `SIGHUP` explicitly so closing its SSH session
+  stops the server and releases the listening port.
+- Server startup uses an iPerf3-like ruled `Server listening` banner.
 
 ### Measurement model
 
@@ -85,6 +88,8 @@ Version `v0.1.0` is publicly released. The following were verified:
 - VPS server and local client can each be downloaded, checksum-validated, and
   run with one command through `install.sh --run`.
 - The default client payload is 1300 bytes instead of 32 bytes.
+- Server mode exits cleanly on SSH hangup, reports occupied ports clearly, and
+  prints an iPerf3-like listening banner.
 
 ## Possible next steps
 

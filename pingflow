@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
+import signal
 import socket
 import socketserver
 import struct
@@ -27,6 +29,7 @@ MAX_PAYLOAD = 1024 * 1024
 PROTOCOL_HELLO = b"PINGFLOW\x01"
 PROTOCOL_ACK = b"OK\x01"
 HELLO_SIZE = len(PROTOCOL_HELLO) + 4
+SERVER_BANNER_RULE = "-" * 60
 
 
 class PingFlowError(Exception):
@@ -473,8 +476,13 @@ def print_result(result: Dict[str, Any]) -> None:
     )
 
 
+def stop_server_on_hangup(_signum: int, _frame: Any) -> None:
+    raise KeyboardInterrupt
+
+
 def run_server(args: argparse.Namespace) -> int:
     servers: List[ThreadingPingFlowServer] = []
+    listen_errors: List[OSError] = []
     requested: List[Tuple[type, str, str]] = []
     if args.family_mode in ("auto", "both", "ipv4"):
         requested.append((IPv4PingFlowServer, args.bind4, "IPv4"))
@@ -487,6 +495,7 @@ def run_server(args: argparse.Namespace) -> int:
             server.tcp_nodelay = args.tcp_nodelay
             servers.append(server)
         except OSError as exc:
+            listen_errors.append(exc)
             print(
                 "warning: could not listen on {} {}:{}: {}".format(
                     label, bind_host, args.port, exc
@@ -495,21 +504,37 @@ def run_server(args: argparse.Namespace) -> int:
             )
 
     if not servers:
+        if listen_errors and all(
+            error.errno == errno.EADDRINUSE for error in listen_errors
+        ):
+            raise PingFlowError(
+                "TCP port {} is already in use; another PingFlow server or "
+                "service may still be running".format(args.port)
+            )
         raise PingFlowError("could not start any IPv4 or IPv6 listener")
 
+    previous_sighup = None
+    if hasattr(signal, "SIGHUP"):
+        previous_sighup = signal.getsignal(signal.SIGHUP)
+        signal.signal(signal.SIGHUP, stop_server_on_hangup)
+
     threads: List[threading.Thread] = []
-    print("PingFlow {} server".format(VERSION))
+    endpoints: List[Tuple[str, str]] = []
     for server in servers:
         address = server.server_address
         family = server.address_family
-        print(
-            "Listening on {} ({})".format(
-                format_endpoint(address, family, args.port), family_name(family)
-            )
+        endpoints.append(
+            (family_name(family), format_endpoint(address, family, args.port))
         )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         threads.append(thread)
+
+    print(SERVER_BANNER_RULE)
+    print("Server listening on TCP port {} (PingFlow {})".format(args.port, VERSION))
+    for label, endpoint in endpoints:
+        print("  {}: {}".format(label, endpoint))
+    print(SERVER_BANNER_RULE)
     print("TCP_NODELAY: {}".format("on" if args.tcp_nodelay else "off"))
     print("Press Ctrl+C to stop.")
 
@@ -524,6 +549,8 @@ def run_server(args: argparse.Namespace) -> int:
             server.server_close()
         for thread in threads:
             thread.join(timeout=2.0)
+        if previous_sighup is not None:
+            signal.signal(signal.SIGHUP, previous_sighup)
     return 0
 
 

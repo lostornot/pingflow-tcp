@@ -66,8 +66,10 @@ if [ "$RUN_ONLY" -eq 1 ]; then
         echo "pingflow installer: python3 is required" >&2
         exit 1
     fi
-    python3 "${temporary_dir}/pingflow" "$@"
-    exit $?
+    exec 3<"${temporary_dir}/pingflow"
+    rm -rf "$temporary_dir"
+    trap - EXIT HUP INT TERM
+    exec python3 - "$@" <&3
 fi
 
 mkdir -p "$INSTALL_DIR"

@@ -3,6 +3,7 @@ import json
 import os
 import runpy
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -189,6 +190,43 @@ class PingFlowIntegrationTests(unittest.TestCase):
         args = parser.parse_args(["-c", "127.0.0.1"])
         module["validate_args"](parser, args)
         self.assertEqual(args.sizes, [1300])
+
+    @unittest.skipUnless(hasattr(signal, "SIGHUP"), "SIGHUP is unavailable")
+    def test_server_stops_and_releases_port_on_hangup(self):
+        port = unused_port(socket.AF_INET, "127.0.0.1")
+        command = [
+            sys.executable,
+            PINGFLOW,
+            "-s",
+            "-4",
+            "-p",
+            str(port),
+            "--bind4",
+            "127.0.0.1",
+        ]
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            wait_for_port(socket.AF_INET, "127.0.0.1", port)
+            process.send_signal(signal.SIGHUP)
+            stdout, stderr = process.communicate(timeout=3)
+            self.assertEqual(process.returncode, 0, stderr)
+            self.assertIn("-" * 60, stdout)
+            self.assertIn("Server listening on TCP port", stdout)
+
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                probe.bind(("127.0.0.1", port))
+            finally:
+                probe.close()
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.communicate(timeout=3)
 
 
 class InstallerTests(unittest.TestCase):
