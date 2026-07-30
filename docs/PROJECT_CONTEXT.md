@@ -74,20 +74,17 @@ loss.
 
 ## Current milestone
 
-Version `v0.1.0` is publicly released. The following were verified:
+Version `v0.1.1` includes:
 
 - IPv4 and IPv6 literal auto-detection;
 - simultaneous IPv4 and IPv6 listeners;
 - Linux/macOS test matrix;
 - latest-Release download URLs;
 - SHA-256 validation;
-- installation into a temporary directory and `pingflow --version`.
-
-## Unreleased changes
-
+- installation into a temporary directory and `pingflow --version`;
 - VPS server and local client can each be downloaded, checksum-validated, and
-  run with one command through `install.sh --run`.
-- The default client payload is 1300 bytes instead of 32 bytes.
+  run with one command through `install.sh --run`;
+- a default client payload of 1300 bytes instead of 32 bytes;
 - Server mode exits cleanly on SSH hangup, reports occupied ports clearly, and
   prints an iPerf3-like listening banner.
 

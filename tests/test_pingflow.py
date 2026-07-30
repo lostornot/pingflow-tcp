@@ -182,7 +182,7 @@ class PingFlowIntegrationTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertEqual(completed.stdout.strip(), "PingFlow 0.1.0")
+        self.assertEqual(completed.stdout.strip(), "PingFlow 0.1.1")
 
     def test_default_payload_is_1300_bytes(self):
         module = runpy.run_path(PINGFLOW, run_name="pingflow_test")
@@ -257,7 +257,7 @@ class InstallerTests(unittest.TestCase):
             )
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(completed.stdout.strip(), "PingFlow 0.1.0")
+        self.assertEqual(completed.stdout.strip(), "PingFlow 0.1.1")
 
 
 if __name__ == "__main__":
