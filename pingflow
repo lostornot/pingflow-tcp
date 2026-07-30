@@ -17,7 +17,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 VERSION = "0.1.0"
 DEFAULT_PORT = 39001
-DEFAULT_PAYLOAD = 32
+DEFAULT_PAYLOAD = 1300
 DEFAULT_COUNT = 300
 DEFAULT_INTERVAL = 0.2
 DEFAULT_TIMEOUT = 1.5

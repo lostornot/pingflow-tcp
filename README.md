@@ -12,11 +12,29 @@ connection and compares it with TCP connection latency.
 - 分别报告 TCP 建连 RTT 与已建立连接内的 request-response RTT
 - 同时支持 IPv4 与 IPv6
 - 一个服务端进程可同时监听 `0.0.0.0` 和 `[::]`
-- 支持 32 B、1300 B 或自定义负载大小
+- 默认使用 1300 B 大负载，也支持 32 B 或自定义负载大小
 - 报告 min、median、p95、p99、max、长尾率和失败率
 - 默认启用 `TCP_NODELAY`
 - 支持 JSON 输出
 - 单文件实现，仅依赖 Python 3 标准库
+
+## 一行下载并运行
+
+无需预先安装，也无需 `sudo`。在 VPS 上一行下载、校验并启动服务端：
+
+```bash
+curl -fsSL https://github.com/lostornot/pingflow-tcp/releases/latest/download/install.sh | sh -s -- --run -s
+```
+
+在本地一行下载、校验并运行客户端（将 `VPS_IP` 替换为 VPS 的 IPv4、
+IPv6 或域名）：
+
+```bash
+curl -fsSL https://github.com/lostornot/pingflow-tcp/releases/latest/download/install.sh | sh -s -- --run -c VPS_IP
+```
+
+两条命令都会使用临时目录，运行结束后自动清理，不会把 `pingflow` 安装
+到系统中。VPS 服务端在前台运行，按 `Ctrl+C` 停止。
 
 ## 一键安装
 
@@ -60,7 +78,8 @@ pingflow -s -6
 sudo ufw allow 39001/tcp
 ```
 
-服务端默认在前台运行，按 `Ctrl+C` 停止。
+服务端默认在前台运行，按 `Ctrl+C` 停止。如果使用上面的“一行下载并
+运行”命令，停止后临时文件也会自动删除。
 
 ### 客户端
 
@@ -71,6 +90,8 @@ sudo ufw allow 39001/tcp
 pingflow -c 203.0.113.10
 pingflow -c 2001:db8::10
 ```
+
+不指定 `-l` 或 `--sizes` 时，默认使用 **1300 B** 负载测试。
 
 IPv6 命令行地址不需要方括号。
 

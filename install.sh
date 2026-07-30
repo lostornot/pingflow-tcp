@@ -5,8 +5,16 @@ REPOSITORY="${PINGFLOW_REPOSITORY:-lostornot/pingflow-tcp}"
 VERSION="${PINGFLOW_VERSION:-latest}"
 INSTALL_DIR="${PINGFLOW_INSTALL_DIR:-/usr/local/bin}"
 PROGRAM_URL_BASE="https://github.com/${REPOSITORY}/releases"
+RUN_ONLY=0
 
-if [ "$VERSION" = "latest" ]; then
+if [ "${1:-}" = "--run" ]; then
+    RUN_ONLY=1
+    shift
+fi
+
+if [ -n "${PINGFLOW_DOWNLOAD_BASE:-}" ]; then
+    DOWNLOAD_BASE="${PINGFLOW_DOWNLOAD_BASE}"
+elif [ "$VERSION" = "latest" ]; then
     DOWNLOAD_BASE="${PROGRAM_URL_BASE}/latest/download"
 else
     DOWNLOAD_BASE="${PROGRAM_URL_BASE}/download/${VERSION}"
@@ -49,6 +57,17 @@ fi
 if [ "$actual_checksum" != "$expected_checksum" ]; then
     echo "pingflow installer: checksum verification failed" >&2
     exit 1
+fi
+
+chmod 0755 "${temporary_dir}/pingflow"
+
+if [ "$RUN_ONLY" -eq 1 ]; then
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "pingflow installer: python3 is required" >&2
+        exit 1
+    fi
+    python3 "${temporary_dir}/pingflow" "$@"
+    exit $?
 fi
 
 mkdir -p "$INSTALL_DIR"

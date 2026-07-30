@@ -51,6 +51,8 @@ loss.
 - Established-flow RTT uses one persistent connection.
 - Each measured exchange sends one fixed-size payload and waits for the full
   echo before sending the next.
+- The default payload is 1300 bytes so the normal no-option client test uses
+  the larger common packet size; 32 bytes remains available explicitly.
 - Warm-up exchanges are excluded from reported statistics.
 - The default enables `TCP_NODELAY`.
 - Reports include min, median, p95, p99, max, slow-sample rate, failures, and
@@ -61,6 +63,8 @@ loss.
 - The executable is a single Python file compatible with Python 3.8+.
 - The installer downloads immutable GitHub Release assets and validates the
   program SHA-256 before installation.
+- Passing `--run` to the installer downloads, validates, and runs PingFlow from
+  a temporary directory without requiring installation or root privileges.
 - A `v*` tag runs tests and publishes `pingflow`, `install.sh`, and
   `SHA256SUMS`.
 - Continuous integration covers Linux and macOS with Python 3.8 and 3.12.
@@ -75,6 +79,12 @@ Version `v0.1.0` is publicly released. The following were verified:
 - latest-Release download URLs;
 - SHA-256 validation;
 - installation into a temporary directory and `pingflow --version`.
+
+## Unreleased changes
+
+- VPS server and local client can each be downloaded, checksum-validated, and
+  run with one command through `install.sh --run`.
+- The default client payload is 1300 bytes instead of 32 bytes.
 
 ## Possible next steps
 

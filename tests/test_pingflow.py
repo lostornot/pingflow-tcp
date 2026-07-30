@@ -1,14 +1,19 @@
+import hashlib
 import json
 import os
+import runpy
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PINGFLOW = os.path.join(PROJECT_ROOT, "pingflow")
+INSTALLER = os.path.join(PROJECT_ROOT, "install.sh")
 
 
 def unused_port(family, host):
@@ -176,6 +181,44 @@ class PingFlowIntegrationTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+        self.assertEqual(completed.stdout.strip(), "PingFlow 0.1.0")
+
+    def test_default_payload_is_1300_bytes(self):
+        module = runpy.run_path(PINGFLOW, run_name="pingflow_test")
+        parser = module["build_parser"]()
+        args = parser.parse_args(["-c", "127.0.0.1"])
+        module["validate_args"](parser, args)
+        self.assertEqual(args.sizes, [1300])
+
+
+class InstallerTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("curl"), "curl is unavailable")
+    def test_run_mode_from_stdin(self):
+        with tempfile.TemporaryDirectory() as release_dir:
+            released_program = os.path.join(release_dir, "pingflow")
+            shutil.copyfile(PINGFLOW, released_program)
+            with open(released_program, "rb") as program_file:
+                checksum = hashlib.sha256(program_file.read()).hexdigest()
+            with open(
+                os.path.join(release_dir, "SHA256SUMS"), "w", encoding="utf-8"
+            ) as checksum_file:
+                checksum_file.write("{}  pingflow\n".format(checksum))
+            with open(INSTALLER, "r", encoding="utf-8") as installer_file:
+                installer = installer_file.read()
+
+            environment = os.environ.copy()
+            environment["PINGFLOW_DOWNLOAD_BASE"] = "file://{}".format(release_dir)
+            completed = subprocess.run(
+                ["sh", "-s", "--", "--run", "--version"],
+                input=installer,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+                timeout=10,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(completed.stdout.strip(), "PingFlow 0.1.0")
 
 
