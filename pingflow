@@ -14,16 +14,17 @@ import struct
 import sys
 import threading
 import time
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
-VERSION = "0.1.2"
+VERSION = "0.2.0"
 DEFAULT_PORT = 39001
 DEFAULT_PAYLOAD = 1300
-DEFAULT_COUNT = 300
-DEFAULT_INTERVAL = 0.2
+DEFAULT_DURATION = 20.0
+DEFAULT_INTERVAL = 0.0
+DEFAULT_REPORT_INTERVAL = 1.0
 DEFAULT_TIMEOUT = 1.5
-DEFAULT_CONNECT_COUNT = 20
+DEFAULT_CONNECT_COUNT = 10
 DEFAULT_WARMUP = 3
 MAX_PAYLOAD = 1024 * 1024
 PROTOCOL_HELLO = b"PINGFLOW\x01"
@@ -269,25 +270,83 @@ def run_warmup(
         exchange(sock, make_payload(sequence, payload_size))
 
 
+def print_progress_window(
+    started_at: float,
+    ended_at: float,
+    records: Sequence[Tuple[float, Optional[float], str]],
+) -> None:
+    completed = [
+        elapsed_ms
+        for _completed_at, elapsed_ms, outcome in records
+        if outcome == "success" and elapsed_ms is not None
+    ]
+    attempted = len(records)
+    if completed:
+        average_ms = sum(completed) / len(completed)
+        maximum_ms = max(completed)
+        print(
+            "[Request/Response RTT] {:6.2f}-{:6.2f} sec  "
+            "{:4d}/{:<4d} samples  avg {:9.2f} ms  max {:9.2f} ms".format(
+                started_at,
+                ended_at,
+                len(completed),
+                attempted,
+                average_ms,
+                maximum_ms,
+            )
+        )
+        return
+
+    print(
+        "[Request/Response RTT] {:6.2f}-{:6.2f} sec  "
+        "{:4d}/{:<4d} samples  no completed RTT".format(
+            started_at,
+            ended_at,
+            0,
+            attempted,
+        )
+    )
+
+
 def measure_flow_rtt(
     family: int,
     sockaddr: Tuple[Any, ...],
     payload_size: int,
-    count: int,
+    count: Optional[int],
+    duration: Optional[float],
     interval: float,
+    report_interval: float,
     timeout: float,
     warmup: int,
     tcp_nodelay: bool,
     verbose: bool,
+    show_progress: bool,
 ) -> Dict[str, Any]:
     samples: List[float] = []
     timeouts = 0
     errors = 0
     connections = 0
     sock: Optional[socket.socket] = None
+    sequence = 0
+    measurement_started = time.perf_counter()
+    deadline = (
+        measurement_started + duration if duration is not None else None
+    )
+    progress_window_start = 0.0
+    next_report_at = report_interval
+    progress_records: List[Tuple[float, Optional[float], str]] = []
 
-    for sequence in range(count):
+    while True:
+        now = time.perf_counter()
+        if count is not None and sequence >= count:
+            break
+        if deadline is not None and now >= deadline:
+            break
+
+        sample_started_at = now - measurement_started
         payload = make_payload(sequence + warmup, payload_size)
+        outcome = "success"
+        elapsed_ms: Optional[float] = None
         try:
             if sock is None:
                 sock = open_persistent_flow(
@@ -299,29 +358,108 @@ def measure_flow_rtt(
             elapsed_ms = exchange(sock, payload)
             samples.append(elapsed_ms)
             if verbose:
-                print("{:04d}  {:9.2f} ms".format(sequence + 1, elapsed_ms))
+                print(
+                    "[{:04d}] {:7.2f} sec  {:9.2f} ms".format(
+                        sequence + 1,
+                        sample_started_at,
+                        elapsed_ms,
+                    )
+                )
         except socket.timeout:
             timeouts += 1
+            outcome = "timeout"
             if verbose:
-                print("{:04d}  timeout".format(sequence + 1))
+                print(
+                    "[{:04d}] {:7.2f} sec  timeout".format(
+                        sequence + 1,
+                        sample_started_at,
+                    )
+                )
             if sock is not None:
                 sock.close()
                 sock = None
         except (ConnectionError, PingFlowError, OSError) as exc:
             errors += 1
+            outcome = "error"
             if verbose:
-                print("{:04d}  error: {}".format(sequence + 1, exc))
+                print(
+                    "[{:04d}] {:7.2f} sec  error: {}".format(
+                        sequence + 1,
+                        sample_started_at,
+                        exc,
+                    )
+                )
             if sock is not None:
                 sock.close()
                 sock = None
-        if interval > 0 and sequence + 1 < count:
+        sequence += 1
+        completed_at = time.perf_counter() - measurement_started
+        progress_records.append((sample_started_at, elapsed_ms, outcome))
+
+        if show_progress:
+            while next_report_at <= completed_at:
+                window_records = [
+                    record
+                    for record in progress_records
+                    if record[0] <= next_report_at
+                ]
+                progress_records = [
+                    record
+                    for record in progress_records
+                    if record[0] > next_report_at
+                ]
+                print_progress_window(
+                    progress_window_start,
+                    next_report_at,
+                    window_records,
+                )
+                progress_window_start = next_report_at
+                next_report_at += report_interval
+
+        if outcome != "success":
+            time.sleep(0.1)
+        elif interval > 0:
             time.sleep(interval)
 
     if sock is not None:
         sock.close()
 
+    elapsed_seconds = time.perf_counter() - measurement_started
+    progress_ended_at = (
+        min(duration, elapsed_seconds)
+        if duration is not None
+        else elapsed_seconds
+    )
+    if show_progress:
+        while next_report_at <= progress_ended_at:
+            window_records = [
+                record
+                for record in progress_records
+                if record[0] <= next_report_at
+            ]
+            progress_records = [
+                record
+                for record in progress_records
+                if record[0] > next_report_at
+            ]
+            print_progress_window(
+                progress_window_start,
+                next_report_at,
+                window_records,
+            )
+            progress_window_start = next_report_at
+            next_report_at += report_interval
+        if progress_records or progress_ended_at > progress_window_start:
+            print_progress_window(
+                progress_window_start,
+                progress_ended_at,
+                progress_records,
+            )
+
     return {
         "samples_ms": samples,
+        "attempted": sequence,
+        "elapsed_seconds": elapsed_seconds,
         "timeouts": timeouts,
         "errors": errors,
         "persistent_connections": connections,
@@ -355,11 +493,14 @@ def make_result(
         sockaddr,
         payload_size,
         args.count,
+        args.duration,
         args.interval,
+        args.report_interval,
         args.timeout,
         args.warmup,
         args.tcp_nodelay,
         args.verbose and not args.json,
+        not args.verbose and not args.json,
     )
     flow_samples = flow.pop("samples_ms")
     if not flow_samples:
@@ -387,8 +528,9 @@ def make_result(
         "family": family_name(family),
         "port": port,
         "payload_bytes": payload_size,
-        "attempted_samples": args.count,
+        "attempted_samples": flow["attempted"],
         "completed_samples": len(flow_samples),
+        "elapsed_seconds": flow["elapsed_seconds"],
         "connect": {
             "attempted": args.connect_count,
             "completed": len(connect_samples),
@@ -405,10 +547,18 @@ def make_result(
             "slow_threshold_ms": slow_threshold,
             "slow_samples": slow_count,
             "slow_rate_percent": slow_count / len(flow_samples) * 100.0,
-            "failure_rate_percent": failure_count / args.count * 100.0,
+            "failure_rate_percent": (
+                failure_count / flow["attempted"] * 100.0
+                if flow["attempted"]
+                else 0.0
+            ),
         },
         "settings": {
             "interval_seconds": args.interval,
+            "requested_duration_seconds": args.duration,
+            "requested_sample_count": args.count,
+            "sample_interval_seconds": args.interval,
+            "report_interval_seconds": args.report_interval,
             "timeout_seconds": args.timeout,
             "warmup_samples": args.warmup,
             "tcp_nodelay": args.tcp_nodelay,
@@ -416,63 +566,33 @@ def make_result(
     }
 
 
-def format_stats(stats: Dict[str, float], fields: Iterable[str]) -> str:
-    return ", ".join("{} {:.2f}".format(name, stats[name]) for name in fields)
-
-
 def print_result(result: Dict[str, Any]) -> None:
     connect = result["connect"]
     flow = result["flow"]
-    print()
-    print("=== summary ===")
+    print("- " * 30)
     print(
-        "target: {} ({}), payload: {} B, samples: {}".format(
-            result["target"],
-            result["family"],
-            result["payload_bytes"],
-            result["attempted_samples"],
+        "[TCP Connect] {:d}/{:d}  median/p95={:.2f}/{:.2f} ms  "
+        "errors={:d}".format(
+            connect["completed"],
+            connect["attempted"],
+            connect["rtt_ms"]["median"],
+            connect["rtt_ms"]["p95"],
+            connect["errors"],
         )
     )
     print(
-        "TCP connect RTT ms: {}".format(
-            format_stats(connect["rtt_ms"], ("median", "p95"))
-        )
-    )
-    print(
-        "TCP connect samples: {}/{}, errors: {}".format(
-            connect["completed"], connect["attempted"], connect["errors"]
-        )
-    )
-    print(
-        "established request/response RTT ms: {}".format(
-            format_stats(
-                flow["rtt_ms"], ("min", "median", "p95", "p99", "max")
-            )
-        )
-    )
-    print(
-        "median latency gap: {:+.2f} ms ({:.2f}x)".format(
-            flow["median_gap_ms"], flow["median_ratio"]
-        )
-    )
-    print(
-        "completed: {}, timeouts: {}, errors: {}, persistent TCP connections: {}".format(
+        "[Request/Response RTT] {:d}/{:d}  "
+        "median/p95/p99/max={:.2f}/{:.2f}/{:.2f}/{:.2f} ms  "
+        "timeouts={:d}  errors={:d}".format(
             result["completed_samples"],
+            result["attempted_samples"],
+            flow["rtt_ms"]["median"],
+            flow["rtt_ms"]["p95"],
+            flow["rtt_ms"]["p99"],
+            flow["rtt_ms"]["max"],
             flow["timeouts"],
             flow["errors"],
-            flow["persistent_connections"],
         )
-    )
-    print(
-        "slow sample rate (> {:.2f} ms): {:.2f}% ({}/{})".format(
-            flow["slow_threshold_ms"],
-            flow["slow_rate_percent"],
-            flow["slow_samples"],
-            result["completed_samples"],
-        )
-    )
-    print(
-        "application failure rate: {:.2f}%".format(flow["failure_rate_percent"])
     )
 
 
@@ -561,15 +681,40 @@ def run_client(args: argparse.Namespace) -> int:
 
     if not args.json:
         print("PingFlow {} client".format(VERSION))
+        test_cases = len(targets) * len(args.sizes)
+        if args.duration is not None:
+            estimated_seconds = test_cases * args.duration
+            print(
+                "Plan: {} test case{}, {:g} seconds each, about {:g} "
+                "seconds plus TCP connect probes.".format(
+                    test_cases,
+                    "" if test_cases == 1 else "s",
+                    args.duration,
+                    estimated_seconds,
+                )
+            )
+        else:
+            print(
+                "Plan: {} test case{}, {} request/response samples each.".format(
+                    test_cases,
+                    "" if test_cases == 1 else "s",
+                    args.count,
+                )
+            )
 
     for family, sockaddr in targets:
         for payload_size in args.sizes:
             if not args.json:
+                if args.duration is not None:
+                    limit_description = "{:.0f} seconds".format(args.duration)
+                else:
+                    limit_description = "{} samples".format(args.count)
                 print(
-                    "Testing {} ({}) with {} B payload...".format(
+                    "\nTesting {} ({}) with {} B payload for {}...".format(
                         format_endpoint(sockaddr, family, args.port),
                         family_name(family),
                         payload_size,
+                        limit_description,
                     )
                 )
             try:
@@ -645,15 +790,36 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-p", "--port", type=int, default=DEFAULT_PORT, help="server port"
     )
-    parser.add_argument(
-        "-n", "--count", type=int, default=DEFAULT_COUNT, help="flow RTT samples"
+    limit = parser.add_mutually_exclusive_group()
+    limit.add_argument(
+        "-t",
+        "--time",
+        dest="duration",
+        type=float,
+        metavar="SECONDS",
+        help="request/response test duration (default: {})".format(
+            int(DEFAULT_DURATION)
+        ),
+    )
+    limit.add_argument(
+        "-n",
+        "--count",
+        type=int,
+        help="fixed request/response sample count instead of --time",
     )
     parser.add_argument(
         "-i",
         "--interval",
         type=float,
         default=DEFAULT_INTERVAL,
-        help="seconds between flow samples",
+        help="optional seconds between request/response samples (default: 0)",
+    )
+    parser.add_argument(
+        "--report-interval",
+        type=float,
+        default=DEFAULT_REPORT_INTERVAL,
+        metavar="SECONDS",
+        help="seconds between progress reports (default: 1)",
     )
     size_group = parser.add_mutually_exclusive_group()
     size_group.add_argument(
@@ -712,7 +878,10 @@ def build_parser() -> argparse.ArgumentParser:
         "-J", "--json", action="store_true", help="emit machine-readable JSON"
     )
     parser.add_argument(
-        "-v", "--verbose", action="store_true", help="print every flow RTT sample"
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="print every request/response RTT sample",
     )
     parser.add_argument(
         "--version", action="version", version="PingFlow {}".format(VERSION)
@@ -723,14 +892,20 @@ def build_parser() -> argparse.ArgumentParser:
 def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     if not 1 <= args.port <= 65535:
         parser.error("port must be between 1 and 65535")
-    if args.count < 1:
+    if args.count is not None and args.count < 1:
         parser.error("count must be at least 1")
+    if args.duration is not None and args.duration <= 0:
+        parser.error("time must be greater than zero")
+    if args.count is None and args.duration is None:
+        args.duration = DEFAULT_DURATION
     if args.connect_count < 1:
         parser.error("connect-count must be at least 1")
     if args.warmup < 0:
         parser.error("warmup cannot be negative")
     if args.interval < 0:
         parser.error("interval cannot be negative")
+    if args.report_interval <= 0:
+        parser.error("report-interval must be greater than zero")
     if args.timeout <= 0:
         parser.error("timeout must be greater than zero")
     if args.slow_ms is not None and args.slow_ms <= 0:

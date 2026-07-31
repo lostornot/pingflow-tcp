@@ -182,7 +182,7 @@ class PingFlowIntegrationTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertEqual(completed.stdout.strip(), "PingFlow 0.1.2")
+        self.assertEqual(completed.stdout.strip(), "PingFlow 0.2.0")
 
     def test_default_payload_is_1300_bytes(self):
         module = runpy.run_path(PINGFLOW, run_name="pingflow_test")
@@ -190,6 +190,17 @@ class PingFlowIntegrationTests(unittest.TestCase):
         args = parser.parse_args(["-c", "127.0.0.1"])
         module["validate_args"](parser, args)
         self.assertEqual(args.sizes, [1300])
+
+    def test_default_client_uses_twenty_second_continuous_mode(self):
+        module = runpy.run_path(PINGFLOW, run_name="pingflow_test")
+        parser = module["build_parser"]()
+        args = parser.parse_args(["-c", "127.0.0.1"])
+        module["validate_args"](parser, args)
+        self.assertEqual(args.duration, 20.0)
+        self.assertIsNone(args.count)
+        self.assertEqual(args.interval, 0.0)
+        self.assertEqual(args.report_interval, 1.0)
+        self.assertEqual(args.connect_count, 10)
 
     def test_single_payload_size_aliases(self):
         module = runpy.run_path(PINGFLOW, run_name="pingflow_test")
@@ -199,6 +210,94 @@ class PingFlowIntegrationTests(unittest.TestCase):
                 args = parser.parse_args(["-c", "127.0.0.1", option, "32"])
                 module["validate_args"](parser, args)
                 self.assertEqual(args.sizes, [32])
+
+    def test_time_mode_prints_interval_progress_and_compact_summary(self):
+        port = unused_port(socket.AF_INET, "127.0.0.1")
+        with ServerProcess("-4", "127.0.0.1", port):
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    PINGFLOW,
+                    "-c",
+                    "127.0.0.1",
+                    "-4",
+                    "-p",
+                    str(port),
+                    "-t",
+                    "1.1",
+                    "--connect-count",
+                    "2",
+                    "--warmup",
+                    "0",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        lines = completed.stdout.splitlines()
+        progress_lines = [
+            line
+            for line in lines
+            if line.startswith("[Request/Response RTT]") and " sec " in line
+        ]
+        self.assertGreaterEqual(len(progress_lines), 1)
+        for line in progress_lines:
+            self.assertIn("samples", line)
+            self.assertIn("avg", line)
+            self.assertIn("max", line)
+            self.assertNotIn("p95", line)
+            self.assertNotIn("p99", line)
+
+        connect_summary = [
+            line for line in lines if line.startswith("[TCP Connect]")
+        ]
+        request_summary = [
+            line
+            for line in lines
+            if line.startswith("[Request/Response RTT]") and "median" in line
+        ]
+        self.assertEqual(len(connect_summary), 1)
+        self.assertEqual(len(request_summary), 1)
+        self.assertIn("p95", request_summary[0])
+        self.assertIn("p99", request_summary[0])
+
+    def test_verbose_mode_prints_each_raw_sample(self):
+        port = unused_port(socket.AF_INET, "127.0.0.1")
+        with ServerProcess("-4", "127.0.0.1", port):
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    PINGFLOW,
+                    "-c",
+                    "127.0.0.1",
+                    "-4",
+                    "-p",
+                    str(port),
+                    "-n",
+                    "3",
+                    "--connect-count",
+                    "1",
+                    "--warmup",
+                    "0",
+                    "-v",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        raw_lines = [
+            line
+            for line in completed.stdout.splitlines()
+            if line.startswith(("[0001]", "[0002]", "[0003]"))
+        ]
+        self.assertEqual(len(raw_lines), 3)
+        self.assertFalse(any("samples  avg" in line for line in raw_lines))
 
     @unittest.skipUnless(hasattr(signal, "SIGHUP"), "SIGHUP is unavailable")
     def test_server_stops_and_releases_port_on_hangup(self):
@@ -266,7 +365,7 @@ class InstallerTests(unittest.TestCase):
             )
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(completed.stdout.strip(), "PingFlow 0.1.2")
+        self.assertEqual(completed.stdout.strip(), "PingFlow 0.2.0")
 
 
 if __name__ == "__main__":

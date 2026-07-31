@@ -54,6 +54,15 @@ loss.
 - Established-flow RTT uses one persistent connection.
 - Each measured exchange sends one fixed-size payload and waits for the full
   echo before sending the next.
+- The default client performs 10 TCP connect probes, then runs sequential
+  request/response exchanges continuously for 20 seconds with no added delay.
+- `-t/--time` controls wall-clock measurement duration. `-n/--count` remains
+  available as a mutually exclusive fixed-sample mode.
+- Default terminal output reports each one-second window with completed
+  samples, average RTT, and maximum RTT. Percentiles appear only in the final
+  two-line `[TCP Connect]` and `[Request/Response RTT]` summary.
+- `-v` prints every raw request/response RTT sample, while JSON output remains
+  free of progress text.
 - `-S/--size` is the primary single-payload option. `-l/--length` remains a
   compatibility alias, while `--sizes` runs multiple payload sizes.
 - A payload size is the number of application bytes sent and echoed per
@@ -78,7 +87,7 @@ loss.
 
 ## Current milestone
 
-Version `v0.1.2` includes:
+Version `v0.2.0` includes:
 
 - IPv4 and IPv6 literal auto-detection;
 - simultaneous IPv4 and IPv6 listeners;
@@ -92,7 +101,13 @@ Version `v0.1.2` includes:
 - an explicit `-S/--size` option for one application payload size while
   retaining `-l/--length` compatibility;
 - Server mode exits cleanly on SSH hangup, reports occupied ports clearly, and
-  prints an iPerf3-like listening banner.
+  prints an iPerf3-like listening banner;
+- the default client is time-driven for 20 seconds instead of count-driven for
+  300 samples with a 0.2-second post-sample delay;
+- requests run continuously but strictly one at a time; `-i/--interval` remains
+  available for explicit pacing;
+- interactive output uses one-second request/response windows and a compact
+  two-line final summary with unambiguous measurement names.
 
 ## Possible next steps
 

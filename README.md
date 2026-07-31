@@ -13,6 +13,7 @@ connection and compares it with TCP connection latency.
 - 同时支持 IPv4 与 IPv6
 - 一个服务端进程可同时监听 `0.0.0.0` 和 `[::]`
 - 默认使用 1300 B 应用负载，也支持 32 B 或自定义负载大小
+- 默认连续测试 20 秒，每秒显示一次实际区间结果
 - 报告 min、median、p95、p99、max、长尾率和失败率
 - 默认启用 `TCP_NODELAY`
 - 支持 JSON 输出
@@ -122,6 +123,38 @@ pingflow -c 203.0.113.10 --sizes 32,1300
 
 `--sizes` 只在需要一次比较多个负载大小时使用。
 
+默认先进行 10 次 TCP 建连探测，然后在一条已建立的 TCP 连接中连续测试
+20 秒。每次都必须完整收到服务端回显后才发送下一次请求，不并发发送，
+请求之间默认不额外等待。测试过程中每秒显示该秒内实际完成的样本数、
+平均 RTT 和最大 RTT：
+
+```text
+[Request/Response RTT]   0.00-  1.00 sec    18/18   samples  avg 48.20 ms  max 55.31 ms
+[Request/Response RTT]   1.00-  2.00 sec    19/19   samples  avg 47.85 ms  max 52.62 ms
+```
+
+p95 和 p99 只在测试结束时计算。最终默认只显示两行摘要：
+
+```text
+[TCP Connect] 10/10  median/p95=47.20/50.10 ms  errors=0
+[Request/Response RTT] 372/375  median/p95/p99/max=48.10/53.20/61.40/68.30 ms  timeouts=3  errors=0
+```
+
+修改测试时间：
+
+```bash
+pingflow -c 203.0.113.10 -t 10
+```
+
+需要固定样本数时使用 `-n/--count`，它与 `-t/--time` 互斥：
+
+```bash
+pingflow -c 203.0.113.10 -n 100
+```
+
+`-v` 会显示每一条原始 request-response RTT。若需要主动降低采样频率，
+可用 `-i/--interval` 在每次完成后增加等待时间；默认值为 `0`。
+
 传入域名时，默认使用系统解析器返回的首选地址。只有需要强制地址族或
 同时比较两种地址族时才使用 `-4`、`-6` 或 `--both`：
 
@@ -135,9 +168,8 @@ pingflow -c example.com --both --sizes 32,1300
 
 ```bash
 pingflow -c 203.0.113.10 \
+  --time 60 \
   --connect-count 20 \
-  --count 300 \
-  --interval 0.2 \
   --timeout 1.5 \
   --sizes 32,1300
 ```
@@ -159,8 +191,8 @@ pingflow --help
 正常情况：
 
 ```text
-TCP connect RTT median:                 50 ms
-established request/response RTT median: 51 ms
+[TCP Connect] median:           50 ms
+[Request/Response RTT] median:  51 ms
 ```
 
 握手与连接内交互延迟基本一致。
@@ -168,8 +200,8 @@ established request/response RTT median: 51 ms
 疑似握手包与普通数据包处理不同：
 
 ```text
-TCP connect RTT median:                 50 ms
-established request/response RTT median: 170 ms
+[TCP Connect] median:           50 ms
+[Request/Response RTT] median: 170 ms
 ```
 
 如果中位数正常，但 p99 或 max 偶尔跳到数百毫秒，则代表存在真实长尾。
@@ -187,7 +219,8 @@ PingFlow 不能仅凭应用层结果直接给出原始丢包率，因为 TCP 会
 2. 完成若干次不计入结果的预热交互；
 3. 每次只发送一个请求；
 4. 等待服务端完整回显后再发送下一次请求；
-5. 使用单调高精度时钟测量每次完整 request-response RTT。
+5. 默认不增加额外等待，连续串行采样 20 秒；
+6. 使用单调高精度时钟测量每次完整 request-response RTT。
 
 服务端只接受 PingFlow 协议，payload 上限为 1 MiB，且响应大小与请求
 大小相同，不提供 UDP 服务。

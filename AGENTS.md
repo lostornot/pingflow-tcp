@@ -11,7 +11,7 @@ slow or has a long tail.
 
 - Public repository: `lostornot/pingflow-tcp`
 - Command: `pingflow`
-- Current release: `v0.1.0`
+- Current release: `v0.2.0`
 - Implementation: one executable Python file using only the standard library
 - Supported runtime: Python 3.8 or newer on Linux and macOS
 
@@ -45,6 +45,11 @@ treating the failure as a code defect.
 - Keep IPv6 `IPV6_V6ONLY` enabled so both listeners can coexist reliably.
 - Measure one request at a time on one persistent connection; do not turn the
   default measurement into a throughput or parallel-load test.
+- The default client runs for 20 seconds with no added inter-sample delay,
+  reports one-second average/max windows, and calculates percentiles only in
+  the final summary.
+- Keep `-n/--count` as a fixed-sample alternative to `-t/--time`, and keep
+  `-v` for per-sample output.
 - Keep TCP connect RTT and established request-response RTT separate.
 - Use `-S/--size` as the primary single application-payload option; retain
   `-l/--length` for compatibility and `--sizes` for multiple payload sizes.
