@@ -167,13 +167,13 @@ class PingFlowIntegrationTests(unittest.TestCase):
 
     def test_invalid_payload_length(self):
         completed = subprocess.run(
-            [sys.executable, PINGFLOW, "-c", "127.0.0.1", "-l", "0"],
+            [sys.executable, PINGFLOW, "-c", "127.0.0.1", "-S", "0"],
             check=False,
             capture_output=True,
             text=True,
         )
         self.assertEqual(completed.returncode, 2)
-        self.assertIn("length must be between", completed.stderr)
+        self.assertIn("size must be between", completed.stderr)
 
     def test_version(self):
         completed = subprocess.run(
@@ -182,7 +182,7 @@ class PingFlowIntegrationTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertEqual(completed.stdout.strip(), "PingFlow 0.1.1")
+        self.assertEqual(completed.stdout.strip(), "PingFlow 0.1.2")
 
     def test_default_payload_is_1300_bytes(self):
         module = runpy.run_path(PINGFLOW, run_name="pingflow_test")
@@ -190,6 +190,15 @@ class PingFlowIntegrationTests(unittest.TestCase):
         args = parser.parse_args(["-c", "127.0.0.1"])
         module["validate_args"](parser, args)
         self.assertEqual(args.sizes, [1300])
+
+    def test_single_payload_size_aliases(self):
+        module = runpy.run_path(PINGFLOW, run_name="pingflow_test")
+        for option in ("-S", "--size", "-l", "--length"):
+            with self.subTest(option=option):
+                parser = module["build_parser"]()
+                args = parser.parse_args(["-c", "127.0.0.1", option, "32"])
+                module["validate_args"](parser, args)
+                self.assertEqual(args.sizes, [32])
 
     @unittest.skipUnless(hasattr(signal, "SIGHUP"), "SIGHUP is unavailable")
     def test_server_stops_and_releases_port_on_hangup(self):
@@ -257,7 +266,7 @@ class InstallerTests(unittest.TestCase):
             )
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(completed.stdout.strip(), "PingFlow 0.1.1")
+        self.assertEqual(completed.stdout.strip(), "PingFlow 0.1.2")
 
 
 if __name__ == "__main__":

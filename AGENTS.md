@@ -46,6 +46,8 @@ treating the failure as a code defect.
 - Measure one request at a time on one persistent connection; do not turn the
   default measurement into a throughput or parallel-load test.
 - Keep TCP connect RTT and established request-response RTT separate.
+- Use `-S/--size` as the primary single application-payload option; retain
+  `-l/--length` for compatibility and `--sizes` for multiple payload sizes.
 - Preserve Python-standard-library-only operation unless the user explicitly
   approves a dependency.
 - Treat PingFlow as complementary to iPerf3, not affiliated with it.

@@ -54,6 +54,10 @@ loss.
 - Established-flow RTT uses one persistent connection.
 - Each measured exchange sends one fixed-size payload and waits for the full
   echo before sending the next.
+- `-S/--size` is the primary single-payload option. `-l/--length` remains a
+  compatibility alias, while `--sizes` runs multiple payload sizes.
+- A payload size is the number of application bytes sent and echoed per
+  exchange, not a guaranteed TCP segment or IP packet size.
 - The default payload is 1300 bytes so the normal no-option client test uses
   the larger common packet size; 32 bytes remains available explicitly.
 - Warm-up exchanges are excluded from reported statistics.
@@ -74,7 +78,7 @@ loss.
 
 ## Current milestone
 
-Version `v0.1.1` includes:
+Version `v0.1.2` includes:
 
 - IPv4 and IPv6 literal auto-detection;
 - simultaneous IPv4 and IPv6 listeners;
@@ -85,6 +89,8 @@ Version `v0.1.1` includes:
 - VPS server and local client can each be downloaded, checksum-validated, and
   run with one command through `install.sh --run`;
 - a default client payload of 1300 bytes instead of 32 bytes;
+- an explicit `-S/--size` option for one application payload size while
+  retaining `-l/--length` compatibility;
 - Server mode exits cleanly on SSH hangup, reports occupied ports clearly, and
   prints an iPerf3-like listening banner.
 

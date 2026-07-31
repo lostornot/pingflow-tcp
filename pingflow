@@ -17,7 +17,7 @@ import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 DEFAULT_PORT = 39001
 DEFAULT_PAYLOAD = 1300
 DEFAULT_COUNT = 300
@@ -657,17 +657,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     size_group = parser.add_mutually_exclusive_group()
     size_group.add_argument(
+        "-S",
+        "--size",
         "-l",
         "--length",
+        dest="length",
         type=int,
         metavar="BYTES",
-        help="payload size in bytes (default: {})".format(DEFAULT_PAYLOAD),
+        help="application payload size in bytes (default: {})".format(
+            DEFAULT_PAYLOAD
+        ),
     )
     size_group.add_argument(
         "--sizes",
         type=parse_sizes,
         metavar="LIST",
-        help="comma-separated payload sizes, for example 32,1300",
+        help="comma-separated application payload sizes, for example 32,1300",
     )
     parser.add_argument(
         "--connect-count",
@@ -734,7 +739,7 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
     if args.length is not None:
         if not 1 <= args.length <= MAX_PAYLOAD:
             parser.error(
-                "length must be between 1 and {} bytes".format(MAX_PAYLOAD)
+                "size must be between 1 and {} bytes".format(MAX_PAYLOAD)
             )
         args.sizes = [args.length]
     elif args.sizes is None:
