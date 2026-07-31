@@ -21,7 +21,7 @@ slow or has a long tail.
 - Test an IPv4 or IPv6 literal: `./pingflow -c ADDRESS`
 - Test both common payload sizes: `./pingflow -c ADDRESS --sizes 32,1300`
 - Run all tests: `python3 -m unittest discover -s tests -v`
-- Check the installer syntax: `sh -n install.sh`
+- Check the download-script syntax: `sh -n install.sh && sh -n i`
 
 Integration tests open local TCP sockets. If an execution sandbox blocks local
 listeners, rerun the same tests with local socket permission rather than
@@ -31,6 +31,7 @@ treating the failure as a code defect.
 
 - `pingflow`: client, server, protocol, statistics, and CLI
 - `install.sh`: latest/tagged GitHub Release installer with SHA-256 validation
+- `i`: minimal jsDelivr download-and-run entrypoint with an embedded SHA-256
 - `tests/`: unit and dual-stack integration tests
 - `.github/workflows/test.yml`: Linux/macOS test matrix
 - `.github/workflows/release.yml`: tagged Release asset generation

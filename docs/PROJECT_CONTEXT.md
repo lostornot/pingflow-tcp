@@ -81,6 +81,9 @@ loss.
   program SHA-256 before installation.
 - Passing `--run` to the installer downloads, validates, and runs PingFlow from
   a temporary directory without requiring installation or root privileges.
+- The short `i` entrypoint downloads an immutable tagged program through
+  jsDelivr, validates its embedded SHA-256, and runs it without contacting
+  GitHub from the user's machine.
 - A `v*` tag runs tests and publishes `pingflow`, `install.sh`, and
   `SHA256SUMS`.
 - Continuous integration covers Linux and macOS with Python 3.8 and 3.12.
@@ -108,6 +111,11 @@ Version `v0.2.0` includes:
   available for explicit pacing;
 - interactive output uses one-second request/response windows and a compact
   two-line final summary with unambiguous measurement names.
+
+## Unreleased changes
+
+- Added a minimal jsDelivr-backed `i` entrypoint for shorter VPS and local
+  download-and-run commands that do not require user-side GitHub access.
 
 ## Possible next steps
 

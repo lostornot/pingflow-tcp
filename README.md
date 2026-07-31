@@ -21,17 +21,20 @@ connection and compares it with TCP connection latency.
 
 ## 一行下载并运行
 
-无需预先安装，也无需 `sudo`。在 VPS 上一行下载、校验并启动服务端：
+无需预先安装，也无需 `sudo`。下面的短入口通过 jsDelivr 下载固定版本并
+校验 SHA-256，用户侧下载过程不需要连接 GitHub。
+
+在 VPS 上一行下载并启动服务端：
 
 ```bash
-curl -fsSL https://github.com/lostornot/pingflow-tcp/releases/latest/download/install.sh | sh -s -- --run -s
+curl -fsSL https://cdn.jsdelivr.net/gh/lostornot/pingflow-tcp@main/i | sh -s -- -s
 ```
 
 在本地一行下载、校验并运行客户端（将 `VPS_IP` 替换为 VPS 的 IPv4、
 IPv6 或域名）：
 
 ```bash
-curl -fsSL https://github.com/lostornot/pingflow-tcp/releases/latest/download/install.sh | sh -s -- --run -c VPS_IP
+curl -fsSL https://cdn.jsdelivr.net/gh/lostornot/pingflow-tcp@main/i | sh -s -- -c VPS_IP
 ```
 
 两条命令都会使用临时目录，运行结束后自动清理，不会把 `pingflow` 安装

@@ -15,6 +15,7 @@ import unittest
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PINGFLOW = os.path.join(PROJECT_ROOT, "pingflow")
 INSTALLER = os.path.join(PROJECT_ROOT, "install.sh")
+CDN_RUNNER = os.path.join(PROJECT_ROOT, "i")
 
 
 def unused_port(family, host):
@@ -338,6 +339,29 @@ class PingFlowIntegrationTests(unittest.TestCase):
 
 
 class InstallerTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("curl"), "curl is unavailable")
+    def test_cdn_runner_from_stdin(self):
+        with tempfile.TemporaryDirectory() as release_dir:
+            released_program = os.path.join(release_dir, "pingflow")
+            shutil.copyfile(PINGFLOW, released_program)
+            with open(CDN_RUNNER, "r", encoding="utf-8") as runner_file:
+                runner = runner_file.read()
+
+            environment = os.environ.copy()
+            environment["PINGFLOW_CDN_BASE"] = "file://{}".format(release_dir)
+            completed = subprocess.run(
+                ["sh", "-s", "--", "--version"],
+                input=runner,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+                timeout=10,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout.strip(), "PingFlow 0.2.0")
+
     @unittest.skipUnless(shutil.which("curl"), "curl is unavailable")
     def test_run_mode_from_stdin(self):
         with tempfile.TemporaryDirectory() as release_dir:
